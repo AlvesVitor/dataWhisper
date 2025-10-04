@@ -62,8 +62,8 @@ O projeto foi desenvolvido e testado com o dataset de **Fraudes de Cartão de Cr
 ### 1. Clone o repositório
 
 ```bash
-git clone <url-do-repositorio>
-cd DataWhisper
+git clone https://github.com/AlvesVitor/dataWhisper
+cd dataWhisper
 ```
 
 ### 2. Crie um ambiente virtual
