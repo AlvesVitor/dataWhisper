@@ -29,13 +29,18 @@ st.set_page_config(
 )
 
 class EDAAgent:
-    """Agente Autônomo para Análise Exploratória de Dados"""
+    """Agente Autônomo para Análise Exploratória de Dados - Otimizado"""
     
     def __init__(self, df: pd.DataFrame, api_key: str, model_name: str):
-        self.df = df
+        self.df = self._optimize_dataframe(df)
+        self.df_original_size = len(df)
         self.conclusions = []
         self.analysis_history = []
         self.generated_plots = []
+        
+        # Configurações de otimização
+        self.MAX_PLOT_POINTS = 10000  # Máximo de pontos em gráficos
+        self.MAX_CORRELATION_COLS = 20  # Máximo de colunas para correlação
         
         self.llm = ChatOpenAI(
             model=model_name,
@@ -51,6 +56,37 @@ class EDAAgent:
         self.tools = self._setup_tools()
         
         self.agent = self._setup_agent()
+
+    def _optimize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Otimiza o dataframe reduzindo uso de memória"""
+        df_optimized = df.copy()
+        
+        # Otimizar tipos numéricos
+        for col in df_optimized.select_dtypes(include=['int']).columns:
+            df_optimized[col] = pd.to_numeric(df_optimized[col], downcast='integer')
+        
+        for col in df_optimized.select_dtypes(include=['float']).columns:
+            df_optimized[col] = pd.to_numeric(df_optimized[col], downcast='float')
+        
+        # Converter object para category quando apropriado
+        for col in df_optimized.select_dtypes(include=['object']).columns:
+            num_unique = df_optimized[col].nunique()
+            num_total = len(df_optimized[col])
+            if num_unique / num_total < 0.5:  # Se menos de 50% são únicos
+                df_optimized[col] = df_optimized[col].astype('category')
+        
+        return df_optimized
+
+    def _get_sample_for_plot(self, df: pd.DataFrame, max_points: int = None) -> pd.DataFrame:
+        """Retorna amostra do dataframe para plotagem"""
+        if max_points is None:
+            max_points = self.MAX_PLOT_POINTS
+            
+        if len(df) <= max_points:
+            return df
+        
+        # Amostragem estratificada se possível
+        return df.sample(n=max_points, random_state=42)
 
     def _setup_tools(self) -> List[Tool]:
         """Configura as ferramentas disponíveis para o agente"""
@@ -123,11 +159,13 @@ Observation: o resultado da ação
 Thought: Agora eu sei a resposta final
 Final Answer: a resposta final à pergunta original
 
-IMPORTANTE:
-- Use NO MÁXIMO 3 ações por pergunta
-- Seja direto e objetivo
-- Depois de obter informações suficientes, vá direto para "Final Answer"
-- NÃO repita ações já executadas
+REGRAS IMPORTANTES:
+- Use NO MÁXIMO 2 ações por pergunta
+- Seja EXTREMAMENTE direto e objetivo
+- Assim que tiver informação suficiente, vá IMEDIATAMENTE para "Final Answer"
+- NUNCA repita ações já executadas
+- Para gráficos: execute APENAS a ação de criar o gráfico e vá direto para Final Answer
+- Para perguntas simples: use 1 ação e finalize
 
 Comece agora!
 
@@ -150,7 +188,6 @@ Thought:{agent_scratchpad}"""
             tools=self.tools,
             verbose=True,
             max_iterations=6,
-            early_stopping_method="generate",
             handle_parsing_errors=True,
             return_intermediate_steps=True
         )
@@ -160,18 +197,28 @@ Thought:{agent_scratchpad}"""
     
     def _get_dataframe_info(self, _: str = "") -> str:
         """Retorna informações básicas do dataframe"""
+        memory_usage = self.df.memory_usage(deep=True).sum() / 1024**2
+        
         info = f"""
 Informações do Dataset:
-- Shape: {self.df.shape[0]} linhas × {self.df.shape[1]} colunas
+- Shape: {self.df_original_size} linhas × {self.df.shape[1]} colunas
 - Colunas: {list(self.df.columns)}
 - Tipos de dados: {self.df.dtypes.to_dict()}
-- Memória usada: {self.df.memory_usage(deep=True).sum() / 1024**2:.2f} MB
+- Memória usada: {memory_usage:.2f} MB (otimizado)
 """
         return info
 
     def _get_statistical_summary(self, _: str = "") -> str:
-        """Retorna resumo estatístico"""
-        return self.df.describe().to_string()
+        """Retorna resumo estatístico - otimizado"""
+        numeric_cols = self.df.select_dtypes(include=[np.number]).columns
+        
+        if len(numeric_cols) == 0:
+            return "Não há colunas numéricas no dataset."
+        
+        if len(numeric_cols) > 15:
+            return f"Dataset com {len(numeric_cols)} colunas numéricas. Resumo das primeiras 15:\n{self.df[numeric_cols[:15]].describe().to_string()}"
+        
+        return self.df[numeric_cols].describe().to_string()
 
     def _check_missing_values(self, _: str = "") -> str:
         """Verifica valores faltantes"""
@@ -189,11 +236,16 @@ Informações do Dataset:
         return f"Valores faltantes:\n{result.to_string()}"
 
     def _get_correlation_matrix(self, _: str = "") -> str:
-        """Calcula matriz de correlação"""
+        """Calcula matriz de correlação - otimizado"""
         numeric_cols = self.df.select_dtypes(include=[np.number]).columns
         
         if len(numeric_cols) < 2:
             return "Não há colunas numéricas suficientes para calcular correlações."
+        
+        if len(numeric_cols) > self.MAX_CORRELATION_COLS:
+            cols_to_use = numeric_cols[:self.MAX_CORRELATION_COLS]
+            corr_matrix = self.df[cols_to_use].corr()
+            return f"Matriz de Correlação (primeiras {self.MAX_CORRELATION_COLS} colunas):\n{corr_matrix.to_string()}"
         
         corr_matrix = self.df[numeric_cols].corr()
         return f"Matriz de Correlação:\n{corr_matrix.to_string()}"
@@ -228,21 +280,29 @@ Análise de Outliers para '{column}':
 """
 
     def _create_histogram(self, column: str) -> str:
-        """Cria histograma"""
+        """Cria histograma - otimizado"""
         column = column.strip()
         
         if column not in self.df.columns:
             return f"Coluna '{column}' não encontrada."
         
+        df_plot = self._get_sample_for_plot(self.df[[column]].dropna())
+        
         fig, ax = plt.subplots(figsize=(10, 6))
-        self.df[column].hist(bins=30, ax=ax, edgecolor='black')
+        df_plot[column].hist(bins=30, ax=ax, edgecolor='black')
         ax.set_title(f'Histograma: {column}')
         ax.set_xlabel(column)
         ax.set_ylabel('Frequência')
+        
+        if len(df_plot) < len(self.df):
+            ax.text(0.02, 0.98, f'Amostra de {len(df_plot):,} pontos', 
+                   transform=ax.transAxes, fontsize=9, 
+                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
         plt.tight_layout()
         
         buf = BytesIO()
-        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        plt.savefig(buf, format='png', dpi=80, bbox_inches='tight')  # Reduzir DPI
         buf.seek(0)
         img_base64 = base64.b64encode(buf.read()).decode()
         plt.close()
@@ -256,7 +316,7 @@ Análise de Outliers para '{column}':
         return f"Histograma criado para a coluna '{column}'"
 
     def _create_scatter_plot(self, columns: str) -> str:
-        """Cria gráfico de dispersão"""
+        """Cria gráfico de dispersão - otimizado"""
         try:
             col_x, col_y = [c.strip() for c in columns.split(',')]
         except:
@@ -265,15 +325,23 @@ Análise de Outliers para '{column}':
         if col_x not in self.df.columns or col_y not in self.df.columns:
             return f"Uma ou ambas as colunas não foram encontradas."
         
+        df_plot = self._get_sample_for_plot(self.df[[col_x, col_y]].dropna())
+        
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.scatter(self.df[col_x], self.df[col_y], alpha=0.5)
+        ax.scatter(df_plot[col_x], df_plot[col_y], alpha=0.5, s=20)  # Pontos menores
         ax.set_xlabel(col_x)
         ax.set_ylabel(col_y)
         ax.set_title(f'Scatter Plot: {col_x} vs {col_y}')
+        
+        if len(df_plot) < len(self.df):
+            ax.text(0.02, 0.98, f'Amostra de {len(df_plot):,} pontos', 
+                   transform=ax.transAxes, fontsize=9, 
+                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
         plt.tight_layout()
         
         buf = BytesIO()
-        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        plt.savefig(buf, format='png', dpi=80, bbox_inches='tight')  # Reduzir DPI
         buf.seek(0)
         img_base64 = base64.b64encode(buf.read()).decode()
         plt.close()
@@ -287,20 +355,28 @@ Análise de Outliers para '{column}':
         return f"Scatter plot criado para '{col_x}' vs '{col_y}'"
 
     def _create_box_plot(self, column: str) -> str:
-        """Cria box plot"""
+        """Cria box plot - otimizado"""
         column = column.strip()
         
         if column not in self.df.columns:
             return f"Coluna '{column}' não encontrada."
         
+        df_plot = self._get_sample_for_plot(self.df[[column]].dropna())
+        
         fig, ax = plt.subplots(figsize=(10, 6))
-        self.df.boxplot(column=[column], ax=ax)
+        df_plot.boxplot(column=[column], ax=ax)
         ax.set_title(f'Box Plot: {column}')
         ax.set_ylabel(column)
+        
+        if len(df_plot) < len(self.df):
+            ax.text(0.02, 0.98, f'Baseado em amostra de {len(df_plot):,} pontos', 
+                   transform=ax.transAxes, fontsize=9, 
+                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
         plt.tight_layout()
         
         buf = BytesIO()
-        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        plt.savefig(buf, format='png', dpi=80, bbox_inches='tight')  # Reduzir DPI
         buf.seek(0)
         img_base64 = base64.b64encode(buf.read()).decode()
         plt.close()
@@ -383,10 +459,10 @@ Análise de Outliers para '{column}':
         
         if any(word in query_lower for word in ['linhas', 'rows', 'registros', 'records']):
             if 'quantas' in query_lower or 'quantos' in query_lower or 'how many' in query_lower:
-                return f"O dataset possui {len(self.df)} linhas (registros)."
+                return f"O dataset possui {self.df_original_size:,} linhas (registros)."
         
         if 'shape' in query_lower or 'tamanho' in query_lower or 'dimensão' in query_lower:
-            return f"O dataset tem {self.df.shape[0]} linhas e {self.df.shape[1]} colunas."
+            return f"O dataset tem {self.df_original_size:,} linhas e {self.df.shape[1]} colunas."
         
         if 'primeiras' in query_lower or 'head' in query_lower:
             return f"Primeiras linhas do dataset:\n\n{self.df.head().to_string()}"
@@ -429,6 +505,11 @@ def main():
         - 🔍 Detectar anomalias
         - 🔗 Encontrar correlações
         - 📝 Gerar conclusões
+        
+        **🚀 Otimizado para grandes datasets!**
+        - Amostragem inteligente em gráficos
+        - Redução automática de memória
+        - Performance melhorada
         """)
 
     if not OPENAI_API_KEY:
@@ -439,22 +520,35 @@ def main():
         return
     
     try:
-        df = pd.read_csv(uploaded_file)
+        with st.spinner("📂 Carregando e otimizando dados..."):
+            df = pd.read_csv(uploaded_file)
+            original_memory = df.memory_usage(deep=True).sum() / 1024**2
+        
         st.success(f"✅ Arquivo carregado: {uploaded_file.name}")
         
         with st.expander("👀 Preview dos Dados", expanded=False):
             st.dataframe(df.head(10))
-            st.write(f"**Shape:** {df.shape[0]} linhas × {df.shape[1]} colunas")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Linhas", f"{df.shape[0]:,}")
+            with col2:
+                st.metric("Colunas", f"{df.shape[1]:,}")
         
     except Exception as e:
         st.error(f"❌ Erro ao carregar arquivo: {str(e)}")
         return
     
     if 'agent' not in st.session_state or st.session_state.get('current_file') != uploaded_file.name:
-        with st.spinner("🤖 Inicializando agente..."):
+        with st.spinner("🤖 Inicializando agente otimizado..."):
             st.session_state.agent = EDAAgent(df, OPENAI_API_KEY, OPENAI_MODEL)
             st.session_state.current_file = uploaded_file.name
             st.session_state.messages = []
+            
+            optimized_memory = st.session_state.agent.df.memory_usage(deep=True).sum() / 1024**2
+            memory_saved = ((original_memory - optimized_memory) / original_memory) * 100
+            
+            if memory_saved > 5:
+                st.info(f"💾 Memória otimizada: {original_memory:.1f}MB → {optimized_memory:.1f}MB (economia de {memory_saved:.1f}%)")
     
     agent = st.session_state.agent
     
