@@ -122,22 +122,22 @@ A aplicação abrirá automaticamente no navegador em `http://localhost:8501`
 │  - Visualização de Gráficos         │
 └──────────────┬──────────────────────┘
                │
-┌──────────────▼──────────────────────┐
-│         EDAAgent Class              │
+┌──────────────▼─────────────────────┐
+│         EDAAgent Class             │
 │  ┌────────────────────────────┐    │
 │  │  LangChain ReAct Agent     │    │
 │  │  - Reasoning               │    │
 │  │  - Action Planning         │    │
 │  │  - Tool Selection          │    │
 │  └────────────┬───────────────┘    │
-│               │                     │
+│               │                    │
 │  ┌────────────▼───────────────┐    │
 │  │    Memory & Context        │    │
 │  │  - Conversation Buffer     │    │
 │  │  - Analysis History        │    │
 │  │  - Generated Plots         │    │
 │  └────────────────────────────┘    │
-└──────────────┬──────────────────────┘
+└──────────────┬─────────────────────┘
                │
 ┌──────────────▼──────────────────────┐
 │         9 Ferramentas               │
